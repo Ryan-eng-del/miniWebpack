@@ -4,15 +4,17 @@ const {
   AsyncSeriesHook,
   AsyncParallelHook,
 } = require("tapable");
-
 let NormalModuleFactory = require("./NormalModuleFactory");
-
+let Compilation = require("./Compilation");
+let Stats = require("./Stats");
+const mkdirp = require("mkdirp"); //递归的创建新的文件夹
+const path = require("path");
 class Compiler {
-  options;
   constructor(context) {
+    super();
     this.context = context;
     this.hooks = {
-      //context项目根目录的绝对路径 C:\aproject\zhufeng202009webpack\8.my
+      //context项目根目录的绝对路径 \8.my
       //entry入口文件路径 ./src/index.js
       entryOption: new SyncBailHook(["context", "entry"]),
       beforeRun: new AsyncSeriesHook(["compiler"]), //运行前
@@ -27,6 +29,27 @@ class Compiler {
       done: new AsyncSeriesHook(["stats"]), //所有的编译全部都完成
     };
   }
+
+  emitAssets(compilation, callback) {
+    //把 chunk变成文件,写入硬盘
+    const emitFiles = (err) => {
+      const assets = compilation.assets;
+      let outputPath = this.options.output.path; //dist
+      for (let file in assets) {
+        let source = assets[file];
+        //是输出文件的绝对路径 \8.my\dist\main.js
+        let targetPath = path.posix.join(outputPath, file);
+        this.outputFileSystem.writeFileSync(targetPath, source, "utf8");
+      }
+      callback();
+    };
+    //先触发emit的回调,在写插件的时候emit用的很多,因为它是我们修改输出内容的最后机会
+    this.hooks.emit.callAsync(compilation, () => {
+      //先创建输出目录dist,再写入文件
+      mkdirp(this.options.output.path, emitFiles);
+    });
+  }
+  //run方法是开始编译的入口
   run(callback) {
     const onCompiled = (err, compilation) => {
       this.emitAssets(compilation, (err) => {
@@ -45,33 +68,27 @@ class Compiler {
       });
     });
   }
-
   compile(onCompiled) {
     const params = this.newCompilationParams();
-
     this.hooks.beforeCompile.callAsync(params, (err) => {
       this.hooks.compile.call(params);
       //创建一个新compilation对象
       const compilation = this.newCompilation(params);
       //触发make钩子的回调函数执行
       this.hooks.make.callAsync(compilation, (err) => {
-        console.log(err, "err make.callAsync");
+        //封装代码块之后编译就完成了
+        compilation.seal((err) => {
+          //触发编译完成的钩子
+          this.hooks.afterCompile.callAsync(compilation, (err) => {
+            onCompiled(err, compilation);
+          });
+        });
       });
     });
   }
 
-  newCompilationParams() {
-    const params = {
-      //在创建compilation这前已经创建了一个普通模块工厂
-      normalModuleFactory: new NormalModuleFactory(), //TODO
-    };
-    return params;
-  }
-
   createCompilation() {
-    //  返回 Compilation
-    // return new Compilation(this);
-    return {};
+    return new Compilation(this);
   }
 
   newCompilation(params) {
@@ -79,6 +96,13 @@ class Compiler {
     this.hooks.thisCompilation.call(compilation, params);
     this.hooks.compilation.call(compilation, params);
     return compilation;
+  }
+  newCompilationParams() {
+    const params = {
+      //在创建compilation这前已经创建了一个普通模块工厂
+      normalModuleFactory: new NormalModuleFactory(), //TODO
+    };
+    return params;
   }
 }
 
